@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Segmentation Quick Test</title>
+  <!-- Подключаем TFJS backend и API body-segmentation -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-segmentation"></script>
+  <style>
+    body { margin:0; background:#111; color:#fff; font-family:system-ui; }
+    #wrap { position:relative; width:100vw; height:100vh; overflow:hidden; }
+    video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    #video { transform: scaleX(-1); } /* зеркалим для «селфи» */
+    #hud { position:absolute; top:10px; left:10px; background:rgba(0,0,0,.5); padding:8px 10px; border-radius:8px; font-size:14px;}
+    #bg { position:absolute; inset:0; background:radial-gradient(ellipse at 30% 30%, #3a3a4a, #151520 60%, #0a0a12); }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <!-- Наш «фоновый» слой (пока просто градиент). В 8th Wall это будет 3D-комната -->
+    <div id="bg"></div>
+
+    <!-- Видеопоток с камеры (невиден) -->
+    <video id="video" playsinline autoplay muted style="opacity:0"></video>
+
+    <!-- Сюда рисуем вырезанного человека с мягким краем -->
+    <canvas id="out"></canvas>
+
+    <!-- HUD -->
+    <div id="hud">Loading…</div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const out = document.getElementById('out');
+    const hud = document.getElementById('hud');
+    const ctx = out.getContext('2d');
+
+    let segmenter, running = false, lastT = performance.now(), frames = 0, fps = 0;
+
+    async function setupCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }, // задняя камера; поменяй на 'user' если нужно «селфи»
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      // подгоняем канвас под экран
+      out.width = video.videoWidth;
+      out.height = video.videoHeight;
+    }
+
+    async function setupSegmenter() {
+      const model = bodySegmentation.SupportedModels.MediaPipeSelfieSegmentation;
+      // runtime: 'tfjs' — быстрее на iPhone; modelType: 'general' — точнее, но чуть медленнее
+      segmenter = await bodySegmentation.createSegmenter(model, {
+        runtime: 'tfjs',         // альтернатива: 'mediapipe' (+ подключать @mediapipe/selfie_segmentation)
+        modelType: 'general',    // альтернатива: 'landscape'
+      });
+    }
+
+    async function render() {
+      if (!running) return;
+      // Сегментируем
+      const people = await segmenter.segmentPeople(video);
+      // Делаем бинарную маску с порогом + легкое размытие на отрисовке
+      const fg = {r:0,g:0,b:0,a:0};
+      const bg = {r:0,g:0,b:0,a:255};
+      const drawContour = false;
+      const threshold = 0.7; // ↑ повысишь — края станут «жестче», понизишь — «мягче»
+      const mask = await bodySegmentation.toBinaryMask(people, fg, bg, drawContour, threshold);
+
+      // Рисуем: сначала очищаем, потом саму «фото» с маской поверх фона
+      ctx.clearRect(0, 0, out.width, out.height);
+      // Встроенная утилита рисует видео с учетом маски и блюрит край
+      await bodySegmentation.drawMask(out, video, mask, /*opacity*/1.0, /*maskBlur*/4, /*foreground*/true);
+
+      // FPS
+      frames++;
+      const now = performance.now();
+      if (now - lastT > 1000) {
+        fps = (frames * 1000 / (now - lastT)) | 0;
+        frames = 0; lastT = now;
+        hud.textContent = `Segm: ${fps} fps  |  runtime: tfjs  |  model: general`;
+      }
+
+      requestAnimationFrame(render);
+    }
+
+    (async () => {
+      try {
+        await setupCamera();
+        await setupSegmenter();
+        running = true;
+        render();
+      } catch (e) {
+        hud.textContent = 'Error: ' + e.message;
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
