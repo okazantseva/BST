@@ -11,9 +11,8 @@
     video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
     #hud { position:absolute; top:10px; left:10px; background:rgba(0,0,0,.5); padding:8px 10px; border-radius:8px; font-size:14px;}
   </style>
-
-  <!-- БЕЗ tf.min.js -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-segmentation@1.0.3"></script>
+  <!-- ВАЖНО: именно UMD-бандл, даёт window.bodySegmentation -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-segmentation@1.0.3/dist/body-segmentation.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js"></script>
 </head>
 <body>
@@ -46,22 +45,26 @@
       const model = bodySegmentation.SupportedModels.MediaPipeSelfieSegmentation;
       segmenter = await bodySegmentation.createSegmenter(model, {
         runtime: 'mediapipe',
-        // важен завершающий слэш!
+        // ← ОБЯЗАТЕЛЕН завершающий слэш!
         solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/',
-        modelType: 'general', // можно 'landscape' для ускорения
+        modelType: 'general' // или 'landscape' если нужно быстрее
       });
     }
 
     async function loop() {
       if (!running) return;
       const people = await segmenter.segmentPeople(video);
-      const fg = {r:0,g:0,b:0,a:0}, bg={r:0,g:0,b:0,a:255};
+      const fg = {r:0,g:0,b:0,a:0}, bg = {r:0,g:0,b:0,a:255};
       const mask = await bodySegmentation.toBinaryMask(people, fg, bg, false, 0.7);
       ctx.clearRect(0,0,out.width,out.height);
       await bodySegmentation.drawMask(out, video, mask, 1.0, 4, true);
 
-      frames++; const now=performance.now();
-      if (now-lastT>1000){ fps=(frames*1000/(now-lastT))|0; frames=0; lastT=now; hud.textContent=`Segm: ${fps} fps | runtime: mediapipe`; }
+      frames++; const now = performance.now();
+      if (now - lastT > 1000) {
+        fps = (frames * 1000 / (now - lastT)) | 0;
+        frames = 0; lastT = now;
+        hud.textContent = `Segm: ${fps} fps | runtime: mediapipe`;
+      }
       requestAnimationFrame(loop);
     }
 
@@ -71,7 +74,7 @@
         await setupSegmenter();
         running = true;
         loop();
-      } catch(e) {
+      } catch (e) {
         hud.textContent = 'Error: ' + e.message;
         console.error(e);
       }
