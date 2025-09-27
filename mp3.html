@@ -4,17 +4,18 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta http-equiv="Cache-Control" content="no-store, must-revalidate"/>
-  <title>MediaPipe Segmentation — photobooth bg (fixed mirror + feather)</title>
+  <title>MediaPipe Segmentation — photobooth bg (feather fixed)</title>
   <style>
     html,body{margin:0;height:100%;background:#111;color:#fff;font-family:system-ui}
     #wrap{position:relative;width:100vw;height:100vh;overflow:hidden}
     canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
     video{display:none}
     #hud{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:8px;font-size:14px;z-index:20}
-    #controls{position:absolute;top:10px;right:10px;display:flex;gap:8px;align-items:center;z-index:20}
+    #controls{position:absolute;top:10px;right:10px;display:flex;gap:8px;align-items:center;z-index:20;flex-wrap:wrap}
     button, label{background:rgba(0,0,0,.55);color:#fff;border:1px solid #444;border-radius:8px;padding:6px 10px;font-size:14px}
     input[type=checkbox]{vertical-align:-2px;margin-right:6px}
-    input[type=range]{width:120px}
+    input[type=range]{width:140px}
+    .row{display:flex;gap:8px;align-items:center}
   </style>
   <script src="https://unpkg.com/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
   <script src="https://unpkg.com/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js"></script>
@@ -26,14 +27,19 @@
 
     <div id="hud">Loading…</div>
     <div id="controls">
-      <button id="toggleCam">Use rear camera</button>
-      <label><input id="mirror" type="checkbox" checked> Mirror</label>
-      <label style="padding:6px 8px">Feather <input id="feather" type="range" min="0" max="3" step="0.1" value="1.2"></label>
-      <label><input id="quality" type="checkbox"> Quality 1</label>
+      <div class="row">
+        <button id="toggleCam">Use rear camera</button>
+        <label><input id="mirror" type="checkbox" checked> Mirror</label>
+      </div>
+      <div class="row">
+        <label>Feather <input id="feather" type="range" min="0" max="10" step="0.1" value="2.5"></label>
+        <span id="featherVal">2.5px</span>
+        <label title="Модель 1 — хуже край у крупного плана"><input id="quality" type="checkbox"> Quality 1</label>
+      </div>
     </div>
   </div>
 
-  <!-- фон -->
+  <!-- фон (положи файл рядом с html) -->
   <img id="bgimg" src="lab_bg.jpg.png" style="display:none" crossorigin="anonymous">
 
   <script>
@@ -44,19 +50,20 @@
     const toggleCamBtn = document.getElementById('toggleCam');
     const mirrorChk = document.getElementById('mirror');
     const featherR = document.getElementById('feather');
+    const featherVal = document.getElementById('featherVal');
     const qualityChk = document.getElementById('quality');
     const bgimg = document.getElementById('bgimg');
 
-    // сглаживание апскейла маски
+    // высокое сглаживание апскейла
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
     let useFront = true; // старт с фронталки
     let camera, seg, fps=0, frames=0, lastT=performance.now();
 
-    // оффскрин под маску (чтобы аккуратно блюрить)
+    // оффскрин под маску для «пера»
     const maskCanvas = document.createElement('canvas');
-    const maskCtx = maskCanvas.getContext('2d');
+    const maskCtx = maskCanvas.getContext('2d', { alpha:true });
 
     function fitCanvas(){
       if (!video.videoWidth) return;
@@ -80,18 +87,21 @@
       fitCanvas();
       ctx.clearRect(0,0,out.width,out.height);
 
-      // общий зеркальный трансформ (и для видео, и для маски)
+      // единый трансформ (зеркало) для ВИДЕО и МАСКИ
       ctx.save();
       if (mirrorChk.checked){ ctx.translate(out.width, 0); ctx.scale(-1,1); }
 
-      // 1) рисуем видео
+      // 1) кладём исходное видео
       ctx.drawImage(video, 0, 0, out.width, out.height);
 
-      // 2) готовим маску с мягким краем на оффскрине
+      // 2) готовим маску с «пером» на оффскрине
+      const f = parseFloat(featherR.value)||0;
+      featherVal.textContent = f.toFixed(1) + 'px';
       maskCtx.clearRect(0,0,maskCanvas.width,maskCanvas.height);
       maskCtx.imageSmoothingEnabled = true;
       maskCtx.imageSmoothingQuality = 'high';
-      maskCtx.filter = `blur(${parseFloat(featherR.value)}px)`;  // feather
+      // цепочка фильтров: размытие + легкая контрастность для более четкой границы
+      maskCtx.filter = f>0 ? `blur(${f}px) contrast(180%)` : 'none';
       maskCtx.drawImage(results.segmentationMask, 0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.filter = 'none';
 
@@ -111,14 +121,14 @@
       frames++; const now=performance.now();
       if (now-lastT>1000){
         fps = (frames*1000/(now-lastT))|0; frames=0; lastT=now;
-        hud.textContent = `Segm: ${fps} fps | MP | ${useFront?'front':'rear'} | mirror:${mirrorChk.checked?'on':'off'} | feather:${featherR.value}px | Q:${qualityChk.checked?1:0}`;
+        hud.textContent = `Segm: ${fps} fps | MP | ${useFront?'front':'rear'} | mirror:${mirrorChk.checked?'on':'off'} | feather:${f.toFixed(1)}px | Q:${qualityChk.checked?1:0}`;
       }
     }
 
     async function setupSeg(){
       const base = 'https://unpkg.com/@mediapipe/selfie_segmentation@0.1/';
       seg = new SelfieSegmentation({ locateFile: (f)=> base + f });
-      // ВАЖНО: selfieMode всегда false — зеркалим сами одной матрицей
+      // ВАЖНО: selfieMode выключен — зеркалим сами
       seg.setOptions({ modelSelection: qualityChk.checked ? 1 : 0, selfieMode: false });
       seg.onResults(drawPerson);
     }
@@ -144,11 +154,9 @@
       await startCamera();
     });
 
-    mirrorChk.addEventListener('change', ()=>{});       // просто перерисовка на след. кадре
-    featherR.addEventListener('input', ()=>{});         // меняем мягкость края на лету
-    qualityChk.addEventListener('change', async ()=>{   // переключить модель (0/1)
-      await setupSeg();
-    });
+    mirrorChk.addEventListener('change', ()=>{});
+    featherR.addEventListener('input', ()=>{});       // значение читаем в кадре
+    qualityChk.addEventListener('change', async ()=>{ await setupSeg(); });
 
     boot().catch(e=>{ hud.textContent='Error: '+e.message; console.error(e); });
   </script>
