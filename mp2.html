@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-store, must-revalidate"/>
+  <title>Selfie Segmentation (pure MP)</title>
+  <style>
+    html,body{margin:0;height:100%;background:#111;color:#fff;font-family:system-ui}
+    #wrap{position:relative;width:100vw;height:100vh;overflow:hidden}
+    #bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 30%, #3a3a4a, #151520 60%, #0a0a12)}
+    video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    #hud{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.5);padding:8px 10px;border-radius:8px;font-size:14px;z-index:10}
+  </style>
+  <!-- MediaPipe: камера + SelfieSegmentation (глобалы CameraUtils, SelfieSegmentation) -->
+  <script src="https://unpkg.com/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+  <script src="https://unpkg.com/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="bg"></div>
+    <video id="video" playsinline muted></video>
+    <canvas id="out"></canvas>
+    <div id="hud">Loading…</div>
+  </div>
+
+  <script>
+    const hud   = document.getElementById('hud');
+    const video = document.getElementById('video');
+    const out   = document.getElementById('out');
+    const ctx   = out.getContext('2d');
+
+    let fps=0, frames=0, lastT=performance.now();
+
+    // 1) Инициализируем SelfieSegmentation напрямую (БЕЗ tfjs, БЕЗ bodySegmentation)
+    const mpBase = 'https://unpkg.com/@mediapipe/selfie_segmentation@0.1/';
+    const seg = new SelfieSegmentation({locateFile: (f)=> mpBase + f});
+    seg.setOptions({
+      modelSelection: 1,   // 0 - ближний план, 1 - общий план (нам лучше 1)
+      selfieMode: false    // мы используем заднюю камеру
+    });
+
+    seg.onResults((results)=>{
+      // results.segmentationMask — картинка-маска (чёрно-белая)
+      if (!video.videoWidth) return;
+
+      // Подогнать канвас под видеокадр
+      if (out.width !== video.videoWidth || out.height !== video.videoHeight) {
+        out.width  = video.videoWidth;
+        out.height = video.videoHeight;
+      }
+
+      // Схема рисования:
+      // 1) очищаем
+      ctx.clearRect(0,0,out.width,out.height);
+
+      // 2) кладём фоновую «комнату» (пока просто видео на фоне для проверки)
+      //    Если нужен свой бэкграунд — рисуй здесь свою 3D подложку/картинку.
+      ctx.drawImage(document.getElementById('bg'), 0,0, out.width, out.height); // bg — div, не рисуется; оставим строку как комментарий
+
+      // 3) сначала рисуем маску, потом видео с режимами наложения
+      //    Сначала кладём маску на канвас
+      ctx.save();
+      ctx.drawImage(results.segmentationMask, 0, 0, out.width, out.height);
+
+      // 4) Оставляем ТОЛЬКО человека (чёрное — прозрачно, белое — видно)
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.drawImage(video, 0, 0, out.width, out.height);
+
+      // 5) (опционально) чуть смягчим край: простой фильтр
+      //    На iOS можно обойтись без фильтра, чтобы не грузить GPU
+      // ctx.filter = 'blur(1px)'; // если захочешь — раскомментируй
+      ctx.restore();
+
+      // FPS
+      frames++;
+      const now = performance.now();
+      if (now - lastT > 1000) {
+        fps = (frames * 1000 / (now - lastT)) | 0;
+        frames = 0; lastT = now;
+        hud.textContent = `Segm: ${fps} fps | MediaPipe`;
+      }
+    });
+
+    // 2) Камера: задняя (environment)
+    async function start(){
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {facingMode:'environment'}, audio:false
+      });
+      video.srcObject = stream;
+      await video.play();
+
+      // MediaPipe helper для постоянной подача кадров в seg.send
+      const camera = new Camera(video, {
+        onFrame: async () => { await seg.send({image: video}); },
+        width:  1280,
+        height: 720
+      });
+      camera.start();
+    }
+
+    start().catch(e=>{
+      hud.textContent = 'Error: ' + e.message;
+      console.error(e);
+    });
+  </script>
+</body>
+</html>
