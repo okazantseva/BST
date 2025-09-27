@@ -4,13 +4,12 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta http-equiv="Cache-Control" content="no-store, must-revalidate"/>
-  <title>Selfie Segmentation (pure MP) — clean</title>
+  <title>Selfie Segmentation (MediaPipe) — photobooth bg</title>
   <style>
     html,body{margin:0;height:100%;background:#111;color:#fff;font-family:system-ui}
     #wrap{position:relative;width:100vw;height:100vh;overflow:hidden}
-    #bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 30%, #3a3a4a, #151520 60%, #0a0a12)}
     canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-    video{display:none} /* ВИДЕО СКРЫТО — только как источник для MP */
+    video{display:none} /* видео скрыто, используем как источник кадров */
     #hud{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:8px;font-size:14px;z-index:20}
     #controls{position:absolute;top:10px;right:10px;display:flex;gap:8px;z-index:20}
     button, label{background:rgba(0,0,0,.55);color:#fff;border:1px solid #444;border-radius:8px;padding:6px 10px;font-size:14px}
@@ -22,16 +21,18 @@
 </head>
 <body>
   <div id="wrap">
-    <div id="bg"></div>
     <canvas id="out"></canvas>
     <video id="video" playsinline muted></video>
 
     <div id="hud">Loading…</div>
     <div id="controls">
-      <button id="toggleCam">Use front camera</button>
+      <button id="toggleCam">Use rear camera</button>
       <label><input id="mirror" type="checkbox" checked> Mirror</label>
     </div>
   </div>
+
+  <!-- Скрытая подгрузка фоновой картинки -->
+  <img id="bgimg" src="lab_bg.jpg.png" style="display:none" crossorigin="anonymous">
 
   <script>
     const hud = document.getElementById('hud');
@@ -40,9 +41,10 @@
     const video = document.getElementById('video');
     const toggleCamBtn = document.getElementById('toggleCam');
     const mirrorChk = document.getElementById('mirror');
+    const bgimg = document.getElementById('bgimg');
 
-    let useFront = true;     // стартуем с фронт. камеры (селфи)
-    let camera, seg, running=false, lastT=performance.now(), frames=0, fps=0;
+    let useFront = true; // стартуем с фронталки (для проверки), можно сразу false для задней
+    let camera, seg, fps=0, frames=0, lastT=performance.now();
 
     function fitCanvas(){
       if (!video.videoWidth) return;
@@ -51,35 +53,40 @@
       }
     }
 
+    // рисуем картинку bg на весь канвас (аналог object-fit: cover)
+    function drawBgCover(img){
+      const cw = out.width, ch = out.height;
+      const iw = img.naturalWidth, ih = img.naturalHeight;
+      if (!iw || !ih){ ctx.fillStyle='#151520'; ctx.fillRect(0,0,cw,ch); return; }
+      const s = Math.max(cw/iw, ch/ih);
+      const w = iw*s, h = ih*s;
+      const x = (cw - w)/2, y = (ch - h)/2;
+      ctx.drawImage(img, x, y, w, h);
+    }
+
     function drawPerson(results){
       fitCanvas();
       ctx.clearRect(0,0,out.width,out.height);
 
-      // фон (пока градиент div, он не рисуется на canvas; оставим чисто человека)
-      // если захочешь картинку-фон:
-      // const img = new Image(); img.src='bg.jpg'; ctx.drawImage(img,0,0,out.width,out.height);
-
-      // Маска → рисуем человека с композитом
+      // 1) кладём видео
       ctx.save();
-      if (mirrorChk.checked){
-        ctx.translate(out.width, 0);
-        ctx.scale(-1, 1); // зеркалим вывод
-      }
-
-      // 1) маска
-      ctx.drawImage(results.segmentationMask, 0, 0, out.width, out.height);
-      // 2) оставляем только человека
-      ctx.globalCompositeOperation = 'source-in';
+      if (mirrorChk.checked){ ctx.translate(out.width, 0); ctx.scale(-1,1); }
       ctx.drawImage(video, 0, 0, out.width, out.height);
 
+      // 2) маской оставляем только человека
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.drawImage(results.segmentationMask, 0, 0, out.width, out.height);
       ctx.restore();
 
-      // FPS
-      frames++;
-      const now = performance.now();
-      if (now - lastT > 1000){
-        fps = (frames * 1000 / (now - lastT)) | 0;
-        frames = 0; lastT = now;
+      // 3) фон под человеком
+      ctx.globalCompositeOperation = 'destination-over';
+      if (bgimg.complete) drawBgCover(bgimg);
+      else { ctx.fillStyle='#151520'; ctx.fillRect(0,0,out.width,out.height); }
+
+      // HUD/FPS
+      frames++; const now=performance.now();
+      if (now-lastT>1000){
+        fps = (frames*1000/(now-lastT))|0; frames=0; lastT=now;
         hud.textContent = `Segm: ${fps} fps | MP | ${useFront?'front':'rear'} | mirror:${mirrorChk.checked?'on':'off'}`;
       }
     }
@@ -87,14 +94,12 @@
     async function setupSeg(){
       const base = 'https://unpkg.com/@mediapipe/selfie_segmentation@0.1/';
       seg = new SelfieSegmentation({ locateFile: (f)=> base + f });
-      seg.setOptions({ modelSelection: 1, selfieMode: useFront }); // selfieMode = true для фронт-камеры
+      seg.setOptions({ modelSelection: 1, selfieMode: useFront });
       seg.onResults(drawPerson);
     }
 
     async function startCamera(){
-      // Останавливаем предыдущую камеру, если есть
       if (camera){ try{ camera.stop(); }catch{} }
-      // MediaPipe helper гоняет кадры в seg.send
       camera = new Camera(video, {
         onFrame: async () => { await seg.send({ image: video }); },
         width: 1280, height: 720,
@@ -106,10 +111,8 @@
     async function boot(){
       await setupSeg();
       await startCamera();
-      running = true;
     }
 
-    // Переключатели
     toggleCamBtn.addEventListener('click', async ()=>{
       useFront = !useFront;
       toggleCamBtn.textContent = useFront ? 'Use rear camera' : 'Use front camera';
@@ -117,12 +120,9 @@
       await startCamera();
     });
 
-    mirrorChk.addEventListener('change', ()=> { /* перерисуем на следующем кадре */ });
+    mirrorChk.addEventListener('change', ()=>{}); // просто триггерит новый рендер
 
-    boot().catch(e=>{
-      hud.textContent = 'Error: ' + e.message;
-      console.error(e);
-    });
+    boot().catch(e=>{ hud.textContent='Error: '+e.message; console.error(e); });
   </script>
 </body>
 </html>
