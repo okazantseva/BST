@@ -1,1 +1,92 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-store, must-revalidate"/>
+  <title>MP Segmentation (no TFJS)</title>
+  <style>
+    html,body{margin:0;height:100%;background:#111;color:#fff;font-family:system-ui}
+    #wrap{position:relative;width:100vw;height:100vh;overflow:hidden}
+    #bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 30%, #3a3a4a, #151520 60%, #0a0a12)}
+    video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    #hud{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.5);padding:8px 10px;border-radius:8px;font-size:14px}
+  </style>
+  <!-- ВАЖНО: UMD-бандл модели — даёт window.bodySegmentation -->
+  <script src="https://unpkg.com/@tensorflow-models/body-segmentation@1.0.3/dist/body-segmentation.min.js"></script>
+  <!-- Mediapipe runtime (без TFJS). Это НЕ ESM, это глобальный скрипт. -->
+  <script src="https://unpkg.com/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="bg"></div>
+    <video id="video" playsinline autoplay muted style="opacity:0"></video>
+    <canvas id="out"></canvas>
+    <div id="hud">Loading…</div>
+  </div>
 
+  <script>
+    const hud = document.getElementById('hud');
+    // Диагностика: сразу проверим, что глобал есть
+    if (typeof window.bodySegmentation === 'undefined') {
+      hud.textContent = 'Error: bodySegmentation not loaded';
+      throw new Error('bodySegmentation UMD failed to load');
+    }
+
+    const video = document.getElementById('video');
+    const out = document.getElementById('out');
+    const ctx = out.getContext('2d');
+
+    let segmenter, running=false, lastT=performance.now(), frames=0, fps=0;
+
+    async function setupCamera(){
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }, audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      out.width = video.videoWidth || 1280;
+      out.height = video.videoHeight || 720;
+    }
+
+    async function setupSegmenter(){
+      const model = bodySegmentation.SupportedModels.MediaPipeSelfieSegmentation;
+      segmenter = await bodySegmentation.createSegmenter(model, {
+        runtime: 'mediapipe',
+        // ЗАВЕРШАЮЩИЙ СЛЭШ обязателен:
+        solutionPath: 'https://unpkg.com/@mediapipe/selfie_segmentation@0.1/',
+        modelType: 'general'
+      });
+    }
+
+    async function loop(){
+      if (!running) return;
+      const people = await segmenter.segmentPeople(video);
+      const fg = {r:0,g:0,b:0,a:0}, bg = {r:0,g:0,b:0,a:255};
+      const mask = await bodySegmentation.toBinaryMask(people, fg, bg, false, 0.7);
+      ctx.clearRect(0,0,out.width,out.height);
+      await bodySegmentation.drawMask(out, video, mask, 1.0, 4, true);
+      frames++;
+      const now = performance.now();
+      if (now - lastT > 1000) {
+        fps = (frames * 1000 / (now - lastT)) | 0;
+        frames = 0; lastT = now;
+        hud.textContent = `Segm: ${fps} fps | runtime: mediapipe`;
+      }
+      requestAnimationFrame(loop);
+    }
+
+    (async()=>{
+      try{
+        await setupCamera();
+        await setupSegmenter();
+        running = true;
+        loop();
+      }catch(e){
+        hud.textContent = 'Error: ' + e.message;
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
